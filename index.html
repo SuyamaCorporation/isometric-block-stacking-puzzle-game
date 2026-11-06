@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アイソメトリックブロックパズル</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0f172a; }
+  canvas { display: block; image-rendering: pixelated; }
+  @keyframes celebrate { 0%{transform:scale(1)} 25%{transform:scale(1.1)} 50%{transform:scale(0.95)} 75%{transform:scale(1.05)} 100%{transform:scale(1)} }
+  .celebrate { animation: celebrate 0.5s ease; }
+</style>
+</head>
+<body class="text-white min-h-screen">
+<div class="max-w-lg mx-auto p-4">
+  <header class="text-center py-4">
+    <h1 class="text-2xl font-bold text-cyan-400">アイソメトリックブロックパズル</h1>
+    <p class="text-gray-400 text-sm mt-1">目標シルエットを再現しよう！</p>
+  </header>
+
+  <!-- Controls -->
+  <div class="flex justify-between items-center bg-gray-800 rounded-xl p-3 mb-4 gap-2">
+    <div class="text-center">
+      <div class="text-xs text-gray-400">レベル</div>
+      <div id="level-display" class="text-lg font-bold text-cyan-400">1</div>
+    </div>
+    <div class="text-center">
+      <div class="text-xs text-gray-400">ブロック</div>
+      <div id="block-display" class="text-lg font-bold text-green-400">0</div>
+    </div>
+    <div class="text-center">
+      <div class="text-xs text-gray-400">目標</div>
+      <div id="target-display" class="text-lg font-bold text-yellow-400">0</div>
+    </div>
+    <button onclick="undoLast()" class="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-2 rounded-lg" aria-label="一手戻す">↩ 戻す</button>
+    <button onclick="resetLevel()" class="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-2 rounded-lg" aria-label="リセット">🔄</button>
+  </div>
+
+  <!-- Level buttons -->
+  <div class="flex gap-1 flex-wrap mb-4" role="group" aria-label="レベル選択">
+    <span class="text-xs text-gray-400 self-center mr-1">レベル:</span>
+    <div id="level-btns" class="flex gap-1 flex-wrap"></div>
+    <button onclick="generateRandom()" class="bg-purple-700 hover:bg-purple-600 text-white text-xs px-2 py-1 rounded" aria-label="ランダムパズル生成">∞ ランダム</button>
+  </div>
+
+  <!-- Canvas area: target + player -->
+  <div class="grid grid-cols-2 gap-3 mb-4">
+    <div class="bg-gray-800 rounded-xl p-2">
+      <p class="text-xs text-gray-400 text-center mb-1">目標</p>
+      <canvas id="target-canvas" width="180" height="180" class="w-full" aria-label="目標シルエット"></canvas>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-2">
+      <p class="text-xs text-gray-400 text-center mb-1">あなたの配置（クリックで追加）</p>
+      <canvas id="player-canvas" width="180" height="180" class="w-full cursor-pointer" aria-label="プレイヤーボード" role="button"></canvas>
+    </div>
+  </div>
+
+  <!-- Comparison -->
+  <div id="match-bar" class="bg-gray-800 rounded-xl p-3 mb-4">
+    <div class="flex justify-between text-xs text-gray-400 mb-1">
+      <span>一致率</span>
+      <span id="match-pct">0%</span>
+    </div>
+    <div class="w-full bg-gray-700 rounded-full h-3">
+      <div id="match-fill" class="h-3 rounded-full bg-cyan-500 transition-all duration-300" style="width:0%" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="一致率"></div>
+    </div>
+  </div>
+
+  <div id="success-msg" class="hidden bg-green-900 border border-green-500 rounded-xl p-4 text-center mb-4 celebrate">
+    <div class="text-2xl mb-1">🎉 正解！</div>
+    <div id="success-detail" class="text-green-300 text-sm"></div>
+  </div>
+
+  <p class="text-xs text-gray-500 text-center">クリックでブロック追加、右クリックで削除</p>
+</div>
+
+<script>
+const COLORS = {
+  block: { top: '#22d3ee', left: '#0e7490', right: '#06b6d4' },
+  target: { top: '#fbbf24', left: '#92400e', right: '#d97706' },
+  empty: '#1e293b'
+};
+
+const LEVELS = [
+  // 4x4 grids, 1 = block, 0 = empty
+  [[1,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
+  [[1,1,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
+  [[1,1,0,0],[1,0,0,0],[0,0,0,0],[0,0,0,0]],
+  [[1,1,1,0],[1,0,0,0],[1,0,0,0],[0,0,0,0]],
+  [[1,1,1,1],[1,0,0,0],[0,0,0,0],[0,0,0,0]],
+  [[1,1,0,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]],
+  [[1,1,1,0],[1,1,0,0],[1,0,0,0],[0,0,0,0]],
+  [[1,1,1,1],[1,1,0,0],[1,0,0,0],[0,0,0,0]],
+  [[1,1,1,1],[1,1,1,0],[1,1,0,0],[0,0,0,0]],
+  [[1,1,1,1],[1,1,1,1],[1,1,1,0],[1,0,0,0]],
+];
+
+let currentLevel = 0;
+let target = [], playerGrid = [], N = 4, history = [];
+
+function cloneGrid(g) { return g.map(r => [...r]); }
+
+function isoToScreen(col, row, W, H, cellW) {
+  const isoW = cellW;
+  const isoH = cellW * 0.5;
+  const ox = W / 2;
+  const oy = isoH * 1.5;
+  const x = ox + (col - row) * isoW / 2;
+  const y = oy + (col + row) * isoH / 2;
+  return { x, y };
+}
+
+function drawIsoBlock(ctx, col, row, colors, W, H, cellW) {
+  const { x, y } = isoToScreen(col, row, W, H, cellW);
+  const w = cellW / 2;
+  const h = cellW / 4;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h * 2);
+  ctx.lineTo(x - w, y + h);
+  ctx.closePath();
+  ctx.fillStyle = colors.top;
+  ctx.fill();
+  ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 1; ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x - w, y + h);
+  ctx.lineTo(x, y + h * 2);
+  ctx.lineTo(x, y + h * 3);
+  ctx.lineTo(x - w, y + h * 2);
+  ctx.closePath();
+  ctx.fillStyle = colors.left;
+  ctx.fill();
+  ctx.strokeStyle = '#0f172a'; ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x, y + h * 2);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x + w, y + h * 2);
+  ctx.lineTo(x, y + h * 3);
+  ctx.closePath();
+  ctx.fillStyle = colors.right;
+  ctx.fill();
+  ctx.strokeStyle = '#0f172a'; ctx.stroke();
+}
+
+function drawGrid(canvasId, grid, colorScheme) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const cellW = W / 3.2;
+
+  for (let row = N - 1; row >= 0; row--) {
+    for (let col = 0; col < N; col++) {
+      if (grid[row] && grid[row][col]) {
+        drawIsoBlock(ctx, col, row, colorScheme, W, H, cellW);
+      }
+    }
+  }
+}
+
+function getClickedCell(canvas, evt) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (evt.clientX - rect.left) * scaleX;
+  const my = (evt.clientY - rect.top) * scaleY;
+  const W = canvas.width, H = canvas.height;
+  const cellW = W / 3.2;
+  const isoH = cellW * 0.5 / 2;
+  const ox = W / 2;
+  const oy = isoH * 3;
+
+  let bestDist = Infinity, bestCol = -1, bestRow = -1;
+  for (let row = 0; row < N; row++) {
+    for (let col = 0; col < N; col++) {
+      const { x, y } = isoToScreen(col, row, W, H, cellW);
+      const d = Math.hypot(mx - x, my - (y + isoH));
+      if (d < bestDist) { bestDist = d; bestCol = col; bestRow = row; }
+    }
+  }
+  if (bestDist < cellW * 1.2) return { col: bestCol, row: bestRow };
+  return null;
+}
+
+function checkMatch() {
+  let total = 0, matched = 0;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (target[r][c]) { total++; if (playerGrid[r][c]) matched++; }
+  }
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (!target[r][c] && playerGrid[r][c]) total++;
+  }
+  const pct = total === 0 ? 100 : Math.round(matched / total * 100);
+
+  document.getElementById('match-pct').textContent = pct + '%';
+  document.getElementById('match-fill').style.width = pct + '%';
+  document.getElementById('match-fill').setAttribute('aria-valuenow', pct);
+  document.getElementById('block-display').textContent = playerGrid.flat().filter(Boolean).length;
+
+  if (pct === 100) showSuccess();
+}
+
+function showSuccess() {
+  const used = playerGrid.flat().filter(Boolean).length;
+  const targetCount = target.flat().filter(Boolean).length;
+  const msg = document.getElementById('success-msg');
+  msg.classList.remove('hidden');
+  msg.classList.remove('celebrate'); void msg.offsetWidth; msg.classList.add('celebrate');
+  const det = document.getElementById('success-detail');
+  det.textContent = '使用ブロック: ' + used + ' / ' + targetCount + '（目標）';
+
+  const completed = JSON.parse(localStorage.getItem('iso-completed') || '[]');
+  if (!completed.includes(currentLevel)) {
+    completed.push(currentLevel);
+    localStorage.setItem('iso-completed', JSON.stringify(completed));
+  }
+  renderLevelButtons();
+}
+
+function loadLevel(idx) {
+  currentLevel = idx;
+  target = LEVELS[idx].map(r => [...r]);
+  playerGrid = Array.from({length: N}, () => Array(N).fill(0));
+  history = [];
+  document.getElementById('level-display').textContent = idx + 1;
+  document.getElementById('target-display').textContent = target.flat().filter(Boolean).length;
+  document.getElementById('success-msg').classList.add('hidden');
+  drawGrid('target-canvas', target, COLORS.target);
+  drawGrid('player-canvas', playerGrid, COLORS.block);
+  checkMatch();
+  renderLevelButtons();
+}
+
+function generateRandom() {
+  currentLevel = -1;
+  const size = Math.floor(Math.random() * 2) + 3;
+  N = size;
+  target = Array.from({length: N}, () => Array(N).fill(0));
+  const count = Math.floor(N * N * 0.4) + Math.floor(Math.random() * 3);
+  let placed = 0;
+  while (placed < count) {
+    const r = Math.floor(Math.random() * N);
+    const c = Math.floor(Math.random() * N);
+    if (!target[r][c]) { target[r][c] = 1; placed++; }
+  }
+  playerGrid = Array.from({length: N}, () => Array(N).fill(0));
+  history = [];
+  document.getElementById('level-display').textContent = '∞';
+  document.getElementById('target-display').textContent = target.flat().filter(Boolean).length;
+  document.getElementById('success-msg').classList.add('hidden');
+  drawGrid('target-canvas', target, COLORS.target);
+  drawGrid('player-canvas', playerGrid, COLORS.block);
+  checkMatch();
+}
+
+function resetLevel() {
+  if (currentLevel >= 0) loadLevel(currentLevel);
+  else {
+    playerGrid = Array.from({length: N}, () => Array(N).fill(0));
+    history = [];
+    drawGrid('player-canvas', playerGrid, COLORS.block);
+    checkMatch();
+  }
+}
+
+function undoLast() {
+  if (history.length === 0) return;
+  playerGrid = history.pop();
+  drawGrid('player-canvas', playerGrid, COLORS.block);
+  checkMatch();
+}
+
+function renderLevelButtons() {
+  const completed = JSON.parse(localStorage.getItem('iso-completed') || '[]');
+  const container = document.getElementById('level-btns');
+  container.innerHTML = '';
+  LEVELS.forEach((_, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = i + 1;
+    const isCurrent = i === currentLevel;
+    const isDone = completed.includes(i);
+    btn.className = 'text-xs px-2 py-1 rounded ' +
+      (isCurrent ? 'bg-cyan-600 text-white' : isDone ? 'bg-green-800 text-green-300' : 'bg-gray-700 text-gray-300 hover:bg-gray-600');
+    btn.setAttribute('aria-label', 'レベル ' + (i + 1));
+    btn.setAttribute('aria-pressed', isCurrent ? 'true' : 'false');
+    btn.onclick = () => { N = 4; loadLevel(i); };
+    container.appendChild(btn);
+  });
+}
+
+// Player canvas click
+document.getElementById('player-canvas').addEventListener('click', evt => {
+  const cell = getClickedCell(document.getElementById('player-canvas'), evt);
+  if (!cell) return;
+  history.push(cloneGrid(playerGrid));
+  playerGrid[cell.row][cell.col] = playerGrid[cell.row][cell.col] ? 0 : 1;
+  drawGrid('player-canvas', playerGrid, COLORS.block);
+  checkMatch();
+});
+
+document.getElementById('player-canvas').addEventListener('contextmenu', evt => {
+  evt.preventDefault();
+  const cell = getClickedCell(document.getElementById('player-canvas'), evt);
+  if (!cell) return;
+  history.push(cloneGrid(playerGrid));
+  playerGrid[cell.row][cell.col] = 0;
+  drawGrid('player-canvas', playerGrid, COLORS.block);
+  checkMatch();
+});
+
+N = 4;
+loadLevel(0);
+</script>
+</body>
+</html>
